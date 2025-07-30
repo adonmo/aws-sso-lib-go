@@ -23,24 +23,42 @@ This project is inspired by the Python [aws-sso-util](https://github.com/benkeho
 
 ## Installation
 
-### Library
-
-```bash
-go get github.com/adonmo/aws-sso-lib-go
-```
-
 ### CLI Tool
 
+#### Go Install (Recommended)
 ```bash
 go install github.com/adonmo/aws-sso-lib-go/cmd/aws-sso-util@latest
 ```
 
-Or build from source:
+#### Download Pre-built Binaries
+Download the latest release from [GitHub Releases](https://github.com/adonmo/aws-sso-lib-go/releases):
 
+```bash
+# Linux (x64)
+curl -L https://github.com/adonmo/aws-sso-lib-go/releases/latest/download/aws-sso-util-linux-amd64.tar.gz | tar xz
+
+# macOS (Intel)
+curl -L https://github.com/adonmo/aws-sso-lib-go/releases/latest/download/aws-sso-util-darwin-amd64.tar.gz | tar xz
+
+# macOS (Apple Silicon)
+curl -L https://github.com/adonmo/aws-sso-lib-go/releases/latest/download/aws-sso-util-darwin-arm64.tar.gz | tar xz
+
+# Windows
+# Download aws-sso-util-windows-amd64.zip from releases page
+```
+
+#### Build from Source
 ```bash
 git clone https://github.com/adonmo/aws-sso-lib-go.git
 cd aws-sso-lib-go
-go build -o aws-sso-util ./cmd/aws-sso-util
+make build
+# Binary will be in ./dist/aws-sso-util
+```
+
+### Library
+
+```bash
+go get github.com/adonmo/aws-sso-lib-go
 ```
 
 ## Library Usage
