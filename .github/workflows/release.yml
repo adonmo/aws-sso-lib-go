@@ -57,9 +57,9 @@ jobs:
           fi
 
       - name: Upload Release Asset
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ASSET }}
+          name: aws-sso-util-${{ matrix.goos }}-${{ matrix.goarch }}
           path: ${{ env.ASSET }}
 
   release:
@@ -71,7 +71,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
@@ -117,7 +117,7 @@ jobs:
 
             ## Checksums
 
-            All binaries are built with Go ${{ env.GO_VERSION }} and include checksums for verification.
+            All binaries are built with Go 1.22 and include checksums for verification.
           files: |
             artifacts/**/*
           draft: false
