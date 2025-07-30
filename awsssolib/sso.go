@@ -2,13 +2,16 @@ package awsssolib
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sso"
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
+	"github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 )
 
 const (
@@ -343,7 +346,21 @@ func performDeviceAuthorization(ctx context.Context, input LoginInput) (*Token, 
 			
 			if err != nil {
 				// Check if it's an authorization pending error
-				if err.Error() == "AuthorizationPendingException" {
+				var authPendingErr *types.AuthorizationPendingException
+				var slowDownErr *types.SlowDownException
+				
+				if errors.As(err, &authPendingErr) {
+					// Authorization is still pending, continue polling
+					fmt.Printf("Waiting for authorization... (polling every %d seconds)\n", authResp.Interval)
+					continue
+				} else if errors.As(err, &slowDownErr) {
+					// Slow down the polling as requested by the server
+					fmt.Printf("Slowing down polling as requested by server...\n")
+					time.Sleep(time.Duration(authResp.Interval) * time.Second)
+					continue
+				} else if strings.Contains(err.Error(), "AuthorizationPendingException") {
+					// Fallback string check for older SDK versions
+					fmt.Printf("Waiting for authorization... (polling every %d seconds)\n", authResp.Interval)
 					continue
 				}
 				return nil, fmt.Errorf("failed to create token: %w", err)
