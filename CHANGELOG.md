@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2024-07-30
+
+### Fixed
+- **Critical**: Fixed SSO authentication polling to properly handle `AuthorizationPendingException`
+- Authentication flow now correctly waits for user to complete browser authorization instead of failing prematurely
+- Improved error handling with proper AWS SDK v2 typed errors instead of string matching
+- Added support for `SlowDownException` to respect server rate limiting
+- Added user-friendly polling status messages during authentication
+
+### Technical Improvements
+- Use `errors.As()` for robust error type checking
+- Handle both `AuthorizationPendingException` and `SlowDownException` properly
+- Maintain fallback string matching for compatibility
+- Enhanced authentication flow reliability
+
+This release fixes the main authentication issue where users would click "Allow" in the browser but the CLI would exit with an error instead of completing the login.
+
 ## [0.1.0] - 2024-07-30
 
 ### Added
@@ -47,5 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cobra CLI framework
 - Compatible with existing AWS SSO workflows
 
-[Unreleased]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adonmo/aws-sso-lib-go/releases/tag/v0.1.0
