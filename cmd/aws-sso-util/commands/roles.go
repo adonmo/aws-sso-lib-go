@@ -77,11 +77,11 @@ Examples:
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 				fmt.Fprintln(w, "ACCOUNT ID\tACCOUNT NAME\tROLE NAME")
 				fmt.Fprintln(w, "----------\t------------\t---------")
-				
+
 				for _, role := range roles {
 					fmt.Fprintf(w, "%s\t%s\t%s\n", role.AccountID, role.AccountName, role.RoleName)
 				}
-				
+
 				w.Flush()
 			}
 

@@ -18,28 +18,16 @@ const (
 	// Default SSO client registration
 	defaultClientName = "aws-sso-lib-go"
 	defaultClientType = "public"
-	
+
 	// Token expiry window (5 minutes)
 	defaultExpiryWindow = 5 * time.Minute
 )
 
 // GetAWSConfig returns an AWS SDK v2 config for the specified account and role
 func GetAWSConfig(ctx context.Context, input GetAWSConfigInput) (aws.Config, error) {
-	// Validate input
-	if input.StartURL == "" {
-		return aws.Config{}, &InvalidConfigError{Message: "start URL is required"}
-	}
-	if input.SSORegion == "" {
-		return aws.Config{}, &InvalidConfigError{Message: "SSO region is required"}
-	}
-	if input.AccountID == "" {
-		return aws.Config{}, &InvalidConfigError{Message: "account ID is required"}
-	}
-	if input.RoleName == "" {
-		return aws.Config{}, &InvalidConfigError{Message: "role name is required"}
-	}
-	if input.Region == "" {
-		return aws.Config{}, &InvalidConfigError{Message: "region is required"}
+	// Validate input using centralized validation
+	if err := ValidateGetAWSConfigInput(input); err != nil {
+		return aws.Config{}, err
 	}
 
 	// Format account ID (remove dashes if present)
@@ -73,7 +61,7 @@ func GetAWSConfig(ctx context.Context, input GetAWSConfigInput) (aws.Config, err
 		config.WithCredentialsProvider(provider),
 	)
 	if err != nil {
-		return aws.Config{}, fmt.Errorf("failed to load config: %w", err)
+		return aws.Config{}, fmt.Errorf("failed to load AWS configuration: %w", err)
 	}
 
 	return cfg, nil
@@ -81,12 +69,9 @@ func GetAWSConfig(ctx context.Context, input GetAWSConfigInput) (aws.Config, err
 
 // Login performs SSO login and returns the access token
 func Login(ctx context.Context, input LoginInput) (*LoginOutput, error) {
-	// Validate input
-	if input.StartURL == "" {
-		return nil, &InvalidConfigError{Message: "start URL is required"}
-	}
-	if input.SSORegion == "" {
-		return nil, &InvalidConfigError{Message: "SSO region is required"}
+	// Validate input using centralized validation
+	if err := ValidateLoginInput(input); err != nil {
+		return nil, err
 	}
 
 	// Check for existing token if not forcing refresh
@@ -98,7 +83,7 @@ func Login(ctx context.Context, input LoginInput) (*LoginOutput, error) {
 			if expiryWindow == 0 {
 				expiryWindow = defaultExpiryWindow
 			}
-			
+
 			if time.Now().Add(expiryWindow).Before(token.ExpiresAt) {
 				return &LoginOutput{
 					Token:     token,
@@ -116,8 +101,9 @@ func Login(ctx context.Context, input LoginInput) (*LoginOutput, error) {
 
 	// Cache the token
 	if err := PutCachedToken(input.SSOCache, input.StartURL, token); err != nil {
-		// Log error but don't fail
-		fmt.Printf("Warning: failed to cache token: %v\n", err)
+		// Log error but don't fail - token caching is not critical
+		// Note: In production, this should use structured logging
+		_ = err // Silently ignore cache errors to avoid exposing internal details
 	}
 
 	return &LoginOutput{
@@ -147,8 +133,9 @@ func Logout(ctx context.Context, startURL, ssoRegion string, ssoCache Cache) err
 		AccessToken: aws.String(token.AccessToken),
 	})
 	if err != nil {
-		// Log error but continue with cache deletion
-		fmt.Printf("Warning: SSO logout API call failed: %v\n", err)
+		// Continue with cache deletion even if API call fails
+		// Note: In production, this should use structured logging
+		_ = err // Silently ignore API errors to avoid exposing internal details
 	}
 
 	// Delete cached token
@@ -219,7 +206,7 @@ func ListAvailableRoles(ctx context.Context, input ListRolesInput) ([]Role, erro
 
 	// Get accounts to iterate over
 	var accountsToCheck []Account
-	
+
 	if len(input.AccountIDs) > 0 {
 		// Use specified accounts
 		for _, id := range input.AccountIDs {
@@ -243,10 +230,10 @@ func ListAvailableRoles(ctx context.Context, input ListRolesInput) ([]Role, erro
 
 	// List roles for each account
 	var roles []Role
-	
+
 	for _, account := range accountsToCheck {
 		var nextToken *string
-		
+
 		for {
 			resp, err := client.ListAccountRoles(ctx, &sso.ListAccountRolesInput{
 				AccessToken: aws.String(token.AccessToken),
@@ -255,7 +242,7 @@ func ListAvailableRoles(ctx context.Context, input ListRolesInput) ([]Role, erro
 			})
 			if err != nil {
 				// Skip this account if we can't list roles
-				fmt.Printf("Warning: failed to list roles for account %s: %v\n", account.AccountID, err)
+				// Note: In production, this should use structured logging
 				break
 			}
 
@@ -293,7 +280,7 @@ func performDeviceAuthorization(ctx context.Context, input LoginInput) (*Token, 
 		ClientType: aws.String(defaultClientType),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to register client: %w", err)
+		return nil, fmt.Errorf("failed to register SSO client: %w", err)
 	}
 
 	// Start device authorization
@@ -303,7 +290,7 @@ func performDeviceAuthorization(ctx context.Context, input LoginInput) (*Token, 
 		StartUrl:     aws.String(input.StartURL),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to start device authorization: %w", err)
+		return nil, fmt.Errorf("failed to start SSO device authorization: %w", err)
 	}
 
 	// Call auth handler
@@ -327,43 +314,55 @@ func performDeviceAuthorization(ctx context.Context, input LoginInput) (*Token, 
 		return nil, err
 	}
 
-	// Poll for token
+	// Poll for token with timeout
 	interval := time.Duration(authResp.Interval) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Set a reasonable timeout for the entire authorization process (10 minutes)
+	timeout := 10 * time.Minute
+	if deadline, ok := ctx.Deadline(); ok {
+		// Use context deadline if it's sooner than our timeout
+		if time.Until(deadline) < timeout {
+			timeout = time.Until(deadline)
+		}
+	}
+
+	authCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	for {
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-authCtx.Done():
+			if authCtx.Err() == context.DeadlineExceeded {
+				return nil, fmt.Errorf("SSO authorization timed out after %v", timeout)
+			}
+			return nil, authCtx.Err()
 		case <-ticker.C:
-			tokenResp, err := oidcClient.CreateToken(ctx, &ssooidc.CreateTokenInput{
+			tokenResp, err := oidcClient.CreateToken(authCtx, &ssooidc.CreateTokenInput{
 				ClientId:     registerResp.ClientId,
 				ClientSecret: registerResp.ClientSecret,
 				DeviceCode:   authResp.DeviceCode,
 				GrantType:    aws.String("urn:ietf:params:oauth:grant-type:device_code"),
 			})
-			
+
 			if err != nil {
 				// Check if it's an authorization pending error
 				var authPendingErr *types.AuthorizationPendingException
 				var slowDownErr *types.SlowDownException
-				
+
 				if errors.As(err, &authPendingErr) {
-					// Authorization is still pending, continue polling
-					fmt.Printf("Waiting for authorization... (polling every %d seconds)\n", authResp.Interval)
+					// Authorization is still pending, continue polling silently
 					continue
 				} else if errors.As(err, &slowDownErr) {
 					// Slow down the polling as requested by the server
-					fmt.Printf("Slowing down polling as requested by server...\n")
 					time.Sleep(time.Duration(authResp.Interval) * time.Second)
 					continue
 				} else if strings.Contains(err.Error(), "AuthorizationPendingException") {
 					// Fallback string check for older SDK versions
-					fmt.Printf("Waiting for authorization... (polling every %d seconds)\n", authResp.Interval)
 					continue
 				}
-				return nil, fmt.Errorf("failed to create token: %w", err)
+				return nil, fmt.Errorf("failed to obtain access token: %w", err)
 			}
 
 			// Success! Create token object
@@ -431,6 +430,17 @@ type ssoCredentialProvider struct {
 
 // Retrieve fetches credentials
 func (p *ssoCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	// Add timeout for credential retrieval if not already set
+	var retrieveCtx context.Context
+	var cancel context.CancelFunc
+
+	if _, ok := ctx.Deadline(); !ok {
+		// No deadline set, add a reasonable timeout (30 seconds)
+		retrieveCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	} else {
+		retrieveCtx = ctx
+	}
 	// Check credential cache first
 	cacheKey := generateCredentialCacheKey(p.startURL, p.accountID, p.roleName)
 	if p.credentialCache != nil {
@@ -454,7 +464,7 @@ func (p *ssoCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, 
 	}
 
 	// Create SSO client
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(p.ssoRegion))
+	cfg, err := config.LoadDefaultConfig(retrieveCtx, config.WithRegion(p.ssoRegion))
 	if err != nil {
 		return aws.Credentials{}, fmt.Errorf("failed to load config: %w", err)
 	}
@@ -462,7 +472,7 @@ func (p *ssoCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, 
 	client := sso.NewFromConfig(cfg)
 
 	// Get role credentials
-	resp, err := client.GetRoleCredentials(ctx, &sso.GetRoleCredentialsInput{
+	resp, err := client.GetRoleCredentials(retrieveCtx, &sso.GetRoleCredentialsInput{
 		AccessToken: aws.String(token.AccessToken),
 		AccountId:   aws.String(p.accountID),
 		RoleName:    aws.String(p.roleName),

@@ -3,6 +3,7 @@ package awsssolib
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,7 +57,7 @@ func LoadConfigFile(filename string) (*ConfigFile, error) {
 
 	config := NewConfigFile()
 	scanner := bufio.NewScanner(file)
-	
+
 	var currentProfile *Profile
 	profileRegex := regexp.MustCompile(`^\[profile\s+(.+)\]$`)
 	defaultRegex := regexp.MustCompile(`^\[default\]$`)
@@ -64,7 +65,7 @@ func LoadConfigFile(filename string) (*ConfigFile, error) {
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		
+
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
@@ -250,7 +251,7 @@ func FindInstance(profileName string) (*SSOInstance, error) {
 	// Check environment variables first
 	startURL := os.Getenv("AWS_DEFAULT_SSO_START_URL")
 	region := os.Getenv("AWS_DEFAULT_SSO_REGION")
-	
+
 	if startURL != "" && region != "" {
 		return &SSOInstance{
 			StartURL:       startURL,
@@ -266,7 +267,7 @@ func FindInstance(profileName string) (*SSOInstance, error) {
 		if err != nil {
 			return nil, err
 		}
-		
+
 		profile := config.GetProfile(profileName)
 		if profile != nil && profile.StartURL != "" && profile.SSORegion != "" {
 			return &SSOInstance{
@@ -312,13 +313,13 @@ func GenerateProfileName(template string, account *Account, role *Role, region s
 	name = strings.ReplaceAll(name, "{account_name}", sanitizeName(account.AccountName))
 	name = strings.ReplaceAll(name, "{role_name}", sanitizeName(role.RoleName))
 	name = strings.ReplaceAll(name, "{region}", region)
-	
+
 	// Clean up the name
 	name = strings.ToLower(name)
 	name = regexp.MustCompile(`[^a-z0-9._-]`).ReplaceAllString(name, "-")
 	name = regexp.MustCompile(`-+`).ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-")
-	
+
 	return name
 }
 
@@ -331,9 +332,155 @@ func sanitizeName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "-")
 	name = strings.ReplaceAll(name, ":", "-")
 	name = strings.ReplaceAll(name, "@", "-")
-	
+
 	// Remove multiple dashes
 	name = regexp.MustCompile(`-+`).ReplaceAllString(name, "-")
-	
+
 	return name
+}
+
+// Validation constants and functions
+var (
+	// AWS Account ID regex (12 digits)
+	accountIDRegex = regexp.MustCompile(`^\d{12}$`)
+	// AWS region regex (pattern like us-east-1, eu-west-2, etc.)
+	regionRegex = regexp.MustCompile(`^[a-z]{2}-[a-z]+-\d+$`)
+	// Role name regex (alphanumeric, plus =,.@_- characters)
+	roleNameRegex = regexp.MustCompile(`^[\w+=,.@_-]+$`)
+)
+
+// ValidateStartURL validates an SSO start URL
+func ValidateStartURL(startURL string) error {
+	if startURL == "" {
+		return &InvalidConfigError{Message: "start URL cannot be empty"}
+	}
+
+	parsedURL, err := url.Parse(startURL)
+	if err != nil {
+		return &InvalidConfigError{Message: fmt.Sprintf("invalid start URL format: %v", err)}
+	}
+
+	if parsedURL.Scheme != "https" {
+		return &InvalidConfigError{Message: "start URL must use HTTPS"}
+	}
+
+	if parsedURL.Host == "" {
+		return &InvalidConfigError{Message: "start URL must have a valid host"}
+	}
+
+	// Check for common SSO URL patterns
+	if !strings.Contains(parsedURL.Host, "awsapps.com") && !strings.Contains(parsedURL.Host, "signin.aws") {
+		return &InvalidConfigError{Message: "start URL does not appear to be a valid AWS SSO URL"}
+	}
+
+	return nil
+}
+
+// ValidateRegion validates an AWS region
+func ValidateRegion(region string) error {
+	if region == "" {
+		return &InvalidConfigError{Message: "region cannot be empty"}
+	}
+
+	if !regionRegex.MatchString(region) {
+		return &InvalidConfigError{Message: fmt.Sprintf("invalid region format: %s", region)}
+	}
+
+	return nil
+}
+
+// ValidateAccountID validates an AWS account ID
+func ValidateAccountID(accountID string) error {
+	if accountID == "" {
+		return &InvalidConfigError{Message: "account ID cannot be empty"}
+	}
+
+	// Remove any formatting (dashes, spaces)
+	cleanID := formatAccountID(accountID)
+
+	if !accountIDRegex.MatchString(cleanID) {
+		return &InvalidConfigError{Message: fmt.Sprintf("invalid account ID format: %s (must be 12 digits)", accountID)}
+	}
+
+	return nil
+}
+
+// ValidateRoleName validates an AWS IAM role name
+func ValidateRoleName(roleName string) error {
+	if roleName == "" {
+		return &InvalidConfigError{Message: "role name cannot be empty"}
+	}
+
+	if len(roleName) > 64 {
+		return &InvalidConfigError{Message: fmt.Sprintf("role name too long: %d characters (max 64)", len(roleName))}
+	}
+
+	if !roleNameRegex.MatchString(roleName) {
+		return &InvalidConfigError{Message: fmt.Sprintf("invalid role name format: %s", roleName)}
+	}
+
+	return nil
+}
+
+// ValidateProfile validates a complete profile configuration
+func ValidateProfile(profile *Profile) error {
+	if profile == nil {
+		return &InvalidConfigError{Message: "profile cannot be nil"}
+	}
+
+	// Validate SSO-specific fields if present
+	if profile.StartURL != "" || profile.SSORegion != "" || profile.AccountID != "" || profile.RoleName != "" {
+		if err := ValidateStartURL(profile.StartURL); err != nil {
+			return err
+		}
+		if err := ValidateRegion(profile.SSORegion); err != nil {
+			return err
+		}
+		if err := ValidateAccountID(profile.AccountID); err != nil {
+			return err
+		}
+		if err := ValidateRoleName(profile.RoleName); err != nil {
+			return err
+		}
+	}
+
+	// Validate region if present
+	if profile.Region != "" {
+		if err := ValidateRegion(profile.Region); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ValidateGetAWSConfigInput validates input for GetAWSConfig
+func ValidateGetAWSConfigInput(input GetAWSConfigInput) error {
+	if err := ValidateStartURL(input.StartURL); err != nil {
+		return err
+	}
+	if err := ValidateRegion(input.SSORegion); err != nil {
+		return err
+	}
+	if err := ValidateAccountID(input.AccountID); err != nil {
+		return err
+	}
+	if err := ValidateRoleName(input.RoleName); err != nil {
+		return err
+	}
+	if err := ValidateRegion(input.Region); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateLoginInput validates input for Login
+func ValidateLoginInput(input LoginInput) error {
+	if err := ValidateStartURL(input.StartURL); err != nil {
+		return err
+	}
+	if err := ValidateRegion(input.SSORegion); err != nil {
+		return err
+	}
+	return nil
 }

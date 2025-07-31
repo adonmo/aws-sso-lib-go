@@ -15,7 +15,7 @@ func main() {
 	// Example configuration - replace with your values
 	startURL := os.Getenv("AWS_DEFAULT_SSO_START_URL")
 	ssoRegion := os.Getenv("AWS_DEFAULT_SSO_REGION")
-	
+
 	if startURL == "" || ssoRegion == "" {
 		log.Fatal("Please set AWS_DEFAULT_SSO_START_URL and AWS_DEFAULT_SSO_REGION environment variables")
 	}

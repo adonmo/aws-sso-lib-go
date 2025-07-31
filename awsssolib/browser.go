@@ -60,14 +60,14 @@ func (b *BrowserLauncher) openWithDefaultBrowser(url string) error {
 			{"chromium", url},
 			{"google-chrome", url},
 		}
-		
+
 		for _, args := range commands {
 			if _, err := exec.LookPath(args[0]); err == nil {
 				cmd = exec.Command(args[0], args[1:]...)
 				break
 			}
 		}
-		
+
 		if cmd == nil {
 			return fmt.Errorf("no suitable browser found")
 		}
@@ -82,7 +82,7 @@ func (b *BrowserLauncher) openWithDefaultBrowser(url string) error {
 func (b *BrowserLauncher) openWithCustomCommand(url string) error {
 	// Replace {url} placeholder with actual URL
 	command := strings.ReplaceAll(b.CustomCommand, "{url}", url)
-	
+
 	// Split command into executable and arguments
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
@@ -96,33 +96,33 @@ func (b *BrowserLauncher) openWithCustomCommand(url string) error {
 // DefaultAuthHandler provides the default interactive authentication handler
 func DefaultAuthHandler(ctx context.Context, params AuthHandlerParams) error {
 	launcher := NewBrowserLauncher(false)
-	
+
 	// Try to open browser
 	browserErr := launcher.OpenURL(params.VerificationURIComplete)
-	
+
 	// Always print the manual instructions
 	fmt.Fprintf(os.Stderr, "\n")
 	if browserErr != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open browser automatically.\n")
 	}
-	
+
 	fmt.Fprintf(os.Stderr, "Attempting to open the SSO authorization page in your default browser.\n")
 	fmt.Fprintf(os.Stderr, "If the browser does not open or you wish to use a different device to authorize this request, open the following URL:\n\n")
 	fmt.Fprintf(os.Stderr, "\t%s\n\n", params.VerificationURI)
 	fmt.Fprintf(os.Stderr, "Then enter the code:\n\n")
 	fmt.Fprintf(os.Stderr, "\t%s\n\n", params.UserCode)
-	
+
 	// Calculate time remaining
 	remaining := time.Until(params.ExpiresAt)
 	fmt.Fprintf(os.Stderr, "The code will expire in %d minutes.\n", int(remaining.Minutes()))
-	
+
 	return nil
 }
 
 // NonInteractiveAuthHandler returns an error indicating authentication is needed
 func NonInteractiveAuthHandler(ctx context.Context, params AuthHandlerParams) error {
 	return &AuthenticationNeededError{
-		Message: fmt.Sprintf("authentication required - visit %s and enter code %s", 
+		Message: fmt.Sprintf("authentication required - visit %s and enter code %s",
 			params.VerificationURI, params.UserCode),
 	}
 }

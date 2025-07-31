@@ -109,7 +109,7 @@ Examples:
 				// Check roles if account specified
 				if accountID != "" && roleName != "" {
 					fmt.Fprintln(os.Stderr, "\nChecking role access...")
-					
+
 					roles, err := awsssolib.ListAvailableRoles(ctx, awsssolib.ListRolesInput{
 						StartURL:   startURL,
 						SSORegion:  ssoRegion,
