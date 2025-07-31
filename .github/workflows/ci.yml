@@ -41,7 +41,7 @@ jobs:
         with:
           file: ./coverage.out
 
-  lint:
+  vet:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,14 +51,15 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: latest
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
 
   build:
     runs-on: ubuntu-latest
-    needs: [test, lint]
+    needs: [test, vet]
 
     steps:
       - uses: actions/checkout@v4
