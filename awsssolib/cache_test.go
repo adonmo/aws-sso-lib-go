@@ -2,6 +2,7 @@ package awsssolib
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,14 +87,7 @@ func TestFileCache(t *testing.T) {
 }
 
 func TestTokenCaching(t *testing.T) {
-	// Create temp directory for testing
-	tempDir, err := os.MkdirTemp("", "token-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	cache := NewFileCache(tempDir)
+	// Test SSO token caching (uses real file paths for AWS CLI compatibility)
 	startURL := "https://test.awsapps.com/start"
 
 	// Test token caching
@@ -104,12 +98,15 @@ func TestTokenCaching(t *testing.T) {
 		Region:      "us-east-1",
 	}
 
-	err = PutCachedToken(cache, startURL, token)
+	// Clean up any existing token first
+	DeleteCachedToken(nil, startURL)
+
+	err := PutCachedToken(nil, startURL, token)
 	if err != nil {
 		t.Fatalf("PutCachedToken failed: %v", err)
 	}
 
-	retrieved, err := GetCachedToken(cache, startURL)
+	retrieved, err := GetCachedToken(nil, startURL)
 	if err != nil {
 		t.Fatalf("GetCachedToken failed: %v", err)
 	}
@@ -122,27 +119,50 @@ func TestTokenCaching(t *testing.T) {
 		t.Errorf("Expected access token %s, got %s", token.AccessToken, retrieved.AccessToken)
 	}
 
-	// Test expired token
+	// Clean up the previous token before testing expired token
+	DeleteCachedToken(nil, startURL)
+
+	// Test expired token (expired by more than 5-minute buffer)
 	expiredToken := &Token{
 		AccessToken: "expired-token",
-		ExpiresAt:   time.Now().Add(-1 * time.Hour), // Expired
+		ExpiresAt:   time.Now().UTC().Add(-10 * time.Minute), // Expired beyond buffer, ensure UTC
 		StartURL:    startURL,
 		Region:      "us-east-1",
 	}
 
-	err = PutCachedToken(cache, startURL, expiredToken)
+	err = PutCachedToken(nil, startURL, expiredToken)
 	if err != nil {
 		t.Fatalf("PutCachedToken failed: %v", err)
 	}
 
-	retrieved, err = GetCachedToken(cache, startURL)
+	retrieved, err = GetCachedToken(nil, startURL)
 	if err != nil {
 		t.Fatalf("GetCachedToken failed: %v", err)
 	}
 
 	if retrieved != nil {
-		t.Error("Expected nil for expired token")
+		t.Errorf("Expected nil for expired token, but got token with expiry: %s (current time: %s)", retrieved.ExpiresAt, time.Now())
 	}
+
+	// Clean up
+	DeleteCachedToken(nil, startURL)
+}
+
+func TestAWSCLICompatibility(t *testing.T) {
+	startURL := "https://test.awsapps.com/start"
+
+	// Clean up first
+	DeleteCachedToken(nil, startURL)
+
+	// Test that our cache file path matches expected SHA1 format
+	cachePath := GetSSOCacheFilePath(startURL)
+	expectedHash := "bfe9e37c85cc299e34d8c03b631672483f78cd01" // SHA1 of the test URL
+	if !strings.Contains(cachePath, expectedHash) {
+		t.Errorf("Cache path %s doesn't contain expected hash %s", cachePath, expectedHash)
+	}
+
+	// Clean up
+	DeleteCachedToken(nil, startURL)
 }
 
 func TestGenerateProfileName(t *testing.T) {

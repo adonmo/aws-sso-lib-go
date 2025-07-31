@@ -1,13 +1,11 @@
 package awsssolib
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -62,13 +60,11 @@ func (c *FileCache) Delete(key string) error {
 	return nil
 }
 
-// getCacheFilename generates a cache filename from a key
+// getCacheFilename generates a cache filename from a key (NOT used for SSO tokens)
 func (c *FileCache) getCacheFilename(key string) string {
-	// Create a hash of the key for the filename
-	hasher := sha256.New()
-	hasher.Write([]byte(key))
-	hash := hex.EncodeToString(hasher.Sum(nil))
-	return filepath.Join(c.directory, hash+".json")
+	// This is only used for non-SSO token caching
+	// For SSO tokens, we use GetSSOCacheFilePath
+	return filepath.Join(c.directory, key+".json")
 }
 
 // MemoryCache implements an in-memory cache
@@ -104,63 +100,159 @@ func (c *MemoryCache) Delete(key string) error {
 	return nil
 }
 
+// AWS CLI Compatible Token Format
+// This matches the exact format used by AWS CLI and aws-sso-util
+type AWSCLIToken struct {
+	StartURL              string `json:"startUrl"`
+	Region                string `json:"region"`
+	AccessToken           string `json:"accessToken"`
+	ExpiresAt             string `json:"expiresAt"`
+	ReceivedAt            string `json:"receivedAt,omitempty"`
+	ClientID              string `json:"clientId,omitempty"`
+	ClientSecret          string `json:"clientSecret,omitempty"`
+	RegistrationExpiresAt string `json:"registrationExpiresAt,omitempty"`
+}
+
+// GetSSOCacheFilePath returns the cache file path for the given start URL (AWS CLI compatible)
+func GetSSOCacheFilePath(startURL string) string {
+	// Use SHA1 hashing like AWS CLI and aws-sso-util for compatibility
+	hash := sha1.Sum([]byte(startURL))
+	filename := fmt.Sprintf("%x.json", hash)
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		// Fall back to HOME env var
+		homeDir = os.Getenv("HOME")
+	}
+
+	cacheDir := filepath.Join(homeDir, ".aws", "sso", "cache")
+	return filepath.Join(cacheDir, filename)
+}
+
 // Token cache helpers
 
-// GetCachedToken retrieves a cached SSO token
+// GetCachedToken retrieves a cached SSO token (AWS CLI compatible)
 func GetCachedToken(cache Cache, startURL string) (*Token, error) {
-	if cache == nil {
-		cache = NewFileCache(DefaultSSOCacheDir)
-	}
+	// Always use file system for SSO tokens to ensure AWS CLI compatibility
+	cachePath := GetSSOCacheFilePath(startURL)
 
-	key := generateTokenCacheKey(startURL)
-	data, err := cache.Get(key)
-	if err != nil || data == nil {
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
-	var token Token
-	if err := json.Unmarshal(data, &token); err != nil {
-		return nil, err
+	// Try to parse as AWS CLI token format first
+	var awsToken AWSCLIToken
+	if err := json.Unmarshal(data, &awsToken); err != nil {
+		// Fall back to our format
+		var token Token
+		if err := json.Unmarshal(data, &token); err != nil {
+			return nil, err
+		}
+
+		// Check if token is expired
+		if time.Now().After(token.ExpiresAt) {
+			return nil, nil
+		}
+
+		return &token, nil
 	}
 
-	// Check if token is expired
-	if time.Now().After(token.ExpiresAt) {
+	// Convert AWS CLI token to our format
+	expiresAt, err := time.Parse("2006-01-02T15:04:05Z", awsToken.ExpiresAt)
+	if err != nil {
+		// Try RFC3339 format as fallback
+		expiresAt, err = time.Parse(time.RFC3339, awsToken.ExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse token expiry: %w", err)
+		}
+	}
+
+	// Check if token is expired (with 5-minute buffer)
+	if time.Now().After(expiresAt.Add(-5 * time.Minute)) {
 		return nil, nil
 	}
 
-	return &token, nil
+	// Convert to our Token format
+	token := &Token{
+		AccessToken:  awsToken.AccessToken,
+		ExpiresAt:    expiresAt,
+		ClientID:     awsToken.ClientID,
+		ClientSecret: awsToken.ClientSecret,
+		Region:       awsToken.Region,
+		StartURL:     awsToken.StartURL,
+	}
+
+	// Handle ReceivedAt if present
+	if awsToken.ReceivedAt != "" {
+		if registrationTime, err := time.Parse("2006-01-02T15:04:05Z", awsToken.ReceivedAt); err == nil {
+			token.RegistrationTime = registrationTime
+		}
+	}
+
+	return token, nil
 }
 
-// PutCachedToken stores an SSO token in the cache
+// PutCachedToken stores an SSO token in the cache (AWS CLI compatible format)
 func PutCachedToken(cache Cache, startURL string, token *Token) error {
-	if cache == nil {
-		cache = NewFileCache(DefaultSSOCacheDir)
+	// Always use file system for SSO tokens to ensure AWS CLI compatibility
+	cachePath := GetSSOCacheFilePath(startURL)
+
+	// Ensure cache directory exists
+	cacheDir := filepath.Dir(cachePath)
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return fmt.Errorf("failed to create SSO cache directory: %w", err)
 	}
 
-	key := generateTokenCacheKey(startURL)
-	data, err := json.Marshal(token)
+	// Convert to AWS CLI format
+	awsToken := AWSCLIToken{
+		StartURL:     startURL,
+		Region:       token.Region,
+		AccessToken:  token.AccessToken,
+		ExpiresAt:    token.ExpiresAt.Format("2006-01-02T15:04:05Z"),
+		ReceivedAt:   time.Now().Format("2006-01-02T15:04:05Z"),
+		ClientID:     token.ClientID,
+		ClientSecret: token.ClientSecret,
+	}
+
+	// Set registration expiry if we have client credentials
+	if token.ClientID != "" && token.ClientSecret != "" {
+		// Client registration typically expires in 90 days
+		registrationExpiry := time.Now().Add(90 * 24 * time.Hour)
+		awsToken.RegistrationExpiresAt = registrationExpiry.Format("2006-01-02T15:04:05Z")
+	}
+
+	// Marshal with indentation to match AWS CLI format
+	data, err := json.MarshalIndent(awsToken, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal token: %w", err)
 	}
 
-	return cache.Put(key, data)
+	// Write with proper permissions
+	if err := os.WriteFile(cachePath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write cached token: %w", err)
+	}
+
+	return nil
 }
 
 // DeleteCachedToken removes an SSO token from the cache
 func DeleteCachedToken(cache Cache, startURL string) error {
-	if cache == nil {
-		cache = NewFileCache(DefaultSSOCacheDir)
+	cachePath := GetSSOCacheFilePath(startURL)
+	err := os.Remove(cachePath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-
-	key := generateTokenCacheKey(startURL)
-	return cache.Delete(key)
+	return nil
 }
 
 // generateTokenCacheKey creates a cache key for an SSO token
+// DEPRECATED: Use GetSSOCacheFilePath for AWS CLI compatibility
 func generateTokenCacheKey(startURL string) string {
-	// Normalize the URL
-	url := strings.TrimRight(startURL, "/")
-	return fmt.Sprintf("sso-token-%s", url)
+	return startURL
 }
 
 // Credential cache helpers
