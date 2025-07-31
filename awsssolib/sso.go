@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -25,8 +26,19 @@ const (
 
 // GetAWSConfig returns an AWS SDK v2 config for the specified account and role
 func GetAWSConfig(ctx context.Context, input GetAWSConfigInput) (aws.Config, error) {
+	logger := getLogger(input.Config)
+
+	logger.Debug("Starting AWS config retrieval",
+		slog.String("start_url", input.StartURL),
+		slog.String("sso_region", input.SSORegion),
+		slog.String("account_id", input.AccountID),
+		slog.String("role_name", input.RoleName),
+		slog.String("region", input.Region),
+		slog.Bool("login", input.Login))
+
 	// Validate input using centralized validation
 	if err := ValidateGetAWSConfigInput(input); err != nil {
+		logger.Error("AWS config input validation failed", slog.Any("error", err))
 		return aws.Config{}, err
 	}
 
@@ -35,14 +47,18 @@ func GetAWSConfig(ctx context.Context, input GetAWSConfigInput) (aws.Config, err
 
 	// Login if requested
 	if input.Login {
+		logger.Info("Performing SSO login before config retrieval")
 		_, err := Login(ctx, LoginInput{
 			StartURL:  input.StartURL,
 			SSORegion: input.SSORegion,
 			SSOCache:  input.SSOCache,
+			Config:    input.Config,
 		})
 		if err != nil {
+			logger.Error("SSO login failed", slog.Any("error", err))
 			return aws.Config{}, fmt.Errorf("login failed: %w", err)
 		}
+		logger.Info("SSO login completed successfully")
 	}
 
 	// Create credential provider
@@ -53,29 +69,46 @@ func GetAWSConfig(ctx context.Context, input GetAWSConfigInput) (aws.Config, err
 		roleName:        input.RoleName,
 		ssoCache:        input.SSOCache,
 		credentialCache: input.CredentialCache,
+		config:          input.Config,
 	}
 
 	// Create AWS config
+	logger.Debug("Creating AWS SDK configuration")
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(input.Region),
 		config.WithCredentialsProvider(provider),
 	)
 	if err != nil {
+		logger.Error("Failed to load AWS configuration", slog.Any("error", err))
 		return aws.Config{}, fmt.Errorf("failed to load AWS configuration: %w", err)
 	}
 
+	logger.Info("AWS configuration created successfully",
+		slog.String("region", input.Region),
+		slog.String("account_id", accountID),
+		slog.String("role_name", input.RoleName))
 	return cfg, nil
 }
 
 // Login performs SSO login and returns the access token
 func Login(ctx context.Context, input LoginInput) (*LoginOutput, error) {
+	logger := getLogger(input.Config)
+
+	logger.Info("Starting SSO login",
+		slog.String("start_url", input.StartURL),
+		slog.String("sso_region", input.SSORegion),
+		slog.Bool("force_refresh", input.ForceRefresh),
+		slog.Bool("disable_browser", input.DisableBrowser))
+
 	// Validate input using centralized validation
 	if err := ValidateLoginInput(input); err != nil {
+		logger.Error("Login input validation failed", slog.Any("error", err))
 		return nil, err
 	}
 
 	// Check for existing token if not forcing refresh
 	if !input.ForceRefresh {
+		logger.Debug("Checking for cached SSO token")
 		token, err := GetCachedToken(input.SSOCache, input.StartURL)
 		if err == nil && token != nil {
 			// Check if token is still valid with expiry window
@@ -85,27 +118,45 @@ func Login(ctx context.Context, input LoginInput) (*LoginOutput, error) {
 			}
 
 			if time.Now().Add(expiryWindow).Before(token.ExpiresAt) {
+				logger.Info("Using cached SSO token",
+					slog.Time("expires_at", token.ExpiresAt),
+					slog.Duration("expires_in", time.Until(token.ExpiresAt)))
 				return &LoginOutput{
 					Token:     token,
 					ExpiresAt: token.ExpiresAt,
 				}, nil
+			} else {
+				logger.Debug("Cached token is expired or will expire soon",
+					slog.Time("expires_at", token.ExpiresAt),
+					slog.Duration("expiry_window", expiryWindow))
 			}
+		} else if err != nil {
+			logger.Debug("Failed to retrieve cached token", slog.Any("error", err))
+		} else {
+			logger.Debug("No cached token found")
 		}
 	}
 
 	// Perform device authorization flow
+	logger.Info("Starting device authorization flow")
 	token, err := performDeviceAuthorization(ctx, input)
 	if err != nil {
+		logger.Error("Device authorization failed", slog.Any("error", err))
 		return nil, err
 	}
+	logger.Info("Device authorization completed successfully",
+		slog.Time("expires_at", token.ExpiresAt))
 
 	// Cache the token
+	logger.Debug("Caching SSO token")
 	if err := PutCachedToken(input.SSOCache, input.StartURL, token); err != nil {
 		// Log error but don't fail - token caching is not critical
-		// Note: In production, this should use structured logging
-		_ = err // Silently ignore cache errors to avoid exposing internal details
+		logger.Warn("Failed to cache SSO token", slog.Any("error", err))
+	} else {
+		logger.Debug("SSO token cached successfully")
 	}
 
+	logger.Info("SSO login completed successfully")
 	return &LoginOutput{
 		Token:     token,
 		ExpiresAt: token.ExpiresAt,
@@ -426,10 +477,18 @@ type ssoCredentialProvider struct {
 	roleName        string
 	ssoCache        Cache
 	credentialCache Cache
+	config          *Config
 }
 
 // Retrieve fetches credentials
 func (p *ssoCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	logger := getLogger(p.config)
+
+	logger.Debug("Starting credential retrieval",
+		slog.String("account_id", p.accountID),
+		slog.String("role_name", p.roleName),
+		slog.String("sso_region", p.ssoRegion))
+
 	// Add timeout for credential retrieval if not already set
 	var retrieveCtx context.Context
 	var cancel context.CancelFunc
@@ -444,8 +503,12 @@ func (p *ssoCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, 
 	// Check credential cache first
 	cacheKey := generateCredentialCacheKey(p.startURL, p.accountID, p.roleName)
 	if p.credentialCache != nil {
+		logger.Debug("Checking credential cache")
 		cached, err := GetCachedCredentials(p.credentialCache, cacheKey)
 		if err == nil && cached != nil {
+			logger.Info("Using cached credentials",
+				slog.Time("expires_at", cached.Expiration),
+				slog.Duration("expires_in", time.Until(cached.Expiration)))
 			return aws.Credentials{
 				AccessKeyID:     cached.AccessKeyID,
 				SecretAccessKey: cached.SecretAccessKey,
@@ -454,47 +517,68 @@ func (p *ssoCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, 
 				Expires:         cached.Expiration,
 				Source:          "SSO",
 			}, nil
+		} else if err != nil {
+			logger.Debug("Failed to retrieve cached credentials", slog.Any("error", err))
+		} else {
+			logger.Debug("No cached credentials found")
 		}
 	}
 
 	// Get SSO token
+	logger.Debug("Retrieving SSO token")
 	token, err := GetCachedToken(p.ssoCache, p.startURL)
 	if err != nil || token == nil {
+		logger.Error("SSO token not available", slog.Any("error", err))
 		return aws.Credentials{}, &AuthenticationNeededError{}
 	}
+	logger.Debug("SSO token retrieved successfully")
 
 	// Create SSO client
+	logger.Debug("Creating SSO client")
 	cfg, err := config.LoadDefaultConfig(retrieveCtx, config.WithRegion(p.ssoRegion))
 	if err != nil {
+		logger.Error("Failed to load AWS config for SSO client", slog.Any("error", err))
 		return aws.Credentials{}, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	client := sso.NewFromConfig(cfg)
 
 	// Get role credentials
+	logger.Debug("Calling SSO GetRoleCredentials API")
 	resp, err := client.GetRoleCredentials(retrieveCtx, &sso.GetRoleCredentialsInput{
 		AccessToken: aws.String(token.AccessToken),
 		AccountId:   aws.String(p.accountID),
 		RoleName:    aws.String(p.roleName),
 	})
 	if err != nil {
+		logger.Error("Failed to get role credentials from SSO", slog.Any("error", err))
 		return aws.Credentials{}, fmt.Errorf("failed to get role credentials: %w", err)
 	}
 
 	creds := resp.RoleCredentials
 	expiration := time.Unix(creds.Expiration/1000, 0)
 
+	logger.Info("Role credentials retrieved successfully",
+		slog.Time("expires_at", expiration),
+		slog.Duration("expires_in", time.Until(expiration)))
+
 	// Cache credentials
 	if p.credentialCache != nil {
+		logger.Debug("Caching role credentials")
 		cachedCreds := &CachedCredentials{
 			AccessKeyID:     aws.ToString(creds.AccessKeyId),
 			SecretAccessKey: aws.ToString(creds.SecretAccessKey),
 			SessionToken:    aws.ToString(creds.SessionToken),
 			Expiration:      expiration,
 		}
-		_ = PutCachedCredentials(p.credentialCache, cacheKey, cachedCreds)
+		if err := PutCachedCredentials(p.credentialCache, cacheKey, cachedCreds); err != nil {
+			logger.Warn("Failed to cache credentials", slog.Any("error", err))
+		} else {
+			logger.Debug("Credentials cached successfully")
+		}
 	}
 
+	logger.Debug("Credential retrieval completed successfully")
 	return aws.Credentials{
 		AccessKeyID:     aws.ToString(creds.AccessKeyId),
 		SecretAccessKey: aws.ToString(creds.SecretAccessKey),

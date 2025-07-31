@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/adonmo/aws-sso-lib-go/awsssolib"
@@ -13,6 +14,7 @@ import (
 func NewLoginCommand() *cobra.Command {
 	var forceRefresh bool
 	var disableBrowser bool
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -34,6 +36,19 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 
+			// Setup logging based on verbose flag
+			var config *awsssolib.Config
+			if verbose {
+				// Create debug logger for verbose mode
+				debugLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+					Level: slog.LevelDebug,
+				}))
+				config = awsssolib.NewConfig(debugLogger, slog.LevelDebug)
+			} else {
+				// Use default config (INFO level)
+				config = awsssolib.DefaultConfig()
+			}
+
 			// Get SSO configuration
 			startURL, _ := cmd.Flags().GetString("start-url")
 			ssoRegion, _ := cmd.Flags().GetString("sso-region")
@@ -53,20 +68,25 @@ Examples:
 			}
 
 			// Perform login
-			fmt.Fprintf(os.Stderr, "Logging in to %s...\n", startURL)
+			if !verbose {
+				fmt.Fprintf(os.Stderr, "Logging in to %s...\n", startURL)
+			}
 
 			output, err := awsssolib.Login(ctx, awsssolib.LoginInput{
 				StartURL:       startURL,
 				SSORegion:      ssoRegion,
 				ForceRefresh:   forceRefresh,
 				DisableBrowser: disableBrowser,
+				Config:         config,
 			})
 			if err != nil {
 				return fmt.Errorf("login failed: %w", err)
 			}
 
-			fmt.Fprintf(os.Stderr, "Successfully logged in!\n")
-			fmt.Fprintf(os.Stderr, "Token expires at: %s\n", output.ExpiresAt.Format("2006-01-02 15:04:05"))
+			if !verbose {
+				fmt.Fprintf(os.Stderr, "Successfully logged in!\n")
+				fmt.Fprintf(os.Stderr, "Token expires at: %s\n", output.ExpiresAt.Format("2006-01-02 15:04:05"))
+			}
 
 			return nil
 		},
@@ -74,6 +94,7 @@ Examples:
 
 	cmd.Flags().BoolVar(&forceRefresh, "force-refresh", false, "Force re-authentication even if valid token exists")
 	cmd.Flags().BoolVar(&disableBrowser, "disable-browser", false, "Disable automatic browser opening")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose debug logging")
 
 	return cmd
 }

@@ -2,6 +2,7 @@ package awsssolib
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -41,6 +42,12 @@ type Role struct {
 	AccountName string
 }
 
+// Config contains global configuration for the library
+type Config struct {
+	Logger   *slog.Logger
+	LogLevel slog.Level
+}
+
 // GetAWSConfigInput contains parameters for getting AWS SDK config
 type GetAWSConfigInput struct {
 	StartURL  string
@@ -52,6 +59,8 @@ type GetAWSConfigInput struct {
 	// Optional caches
 	SSOCache        Cache
 	CredentialCache Cache
+	// Optional configuration
+	Config *Config
 }
 
 // LoginInput contains parameters for SSO login
@@ -66,6 +75,8 @@ type LoginInput struct {
 	UserAuthHandler AuthHandler
 	// Optional cache
 	SSOCache Cache
+	// Optional configuration
+	Config *Config
 }
 
 // LoginOutput contains the result of SSO login
@@ -81,6 +92,8 @@ type ListAccountsInput struct {
 	Login     bool
 	// Optional cache
 	SSOCache Cache
+	// Optional configuration
+	Config *Config
 }
 
 // ListRolesInput contains parameters for listing roles
@@ -91,6 +104,8 @@ type ListRolesInput struct {
 	Login      bool
 	// Optional cache
 	SSOCache Cache
+	// Optional configuration
+	Config *Config
 }
 
 // Cache defines the interface for caching tokens and credentials
@@ -134,4 +149,36 @@ type InvalidConfigError struct {
 
 func (e InvalidConfigError) Error() string {
 	return "invalid configuration: " + e.Message
+}
+
+// DefaultConfig returns a default configuration with INFO level logging to stderr
+func DefaultConfig() *Config {
+	return &Config{
+		Logger:   slog.Default(),
+		LogLevel: slog.LevelInfo,
+	}
+}
+
+// NewConfig creates a new configuration with the specified logger and log level
+func NewConfig(logger *slog.Logger, level slog.Level) *Config {
+	return &Config{
+		Logger:   logger,
+		LogLevel: level,
+	}
+}
+
+// getLogger returns the logger from config, or a default logger if config is nil
+func getLogger(config *Config) *slog.Logger {
+	if config != nil && config.Logger != nil {
+		return config.Logger
+	}
+	return slog.Default()
+}
+
+// shouldLog returns true if the given level should be logged based on config
+func shouldLog(config *Config, level slog.Level) bool {
+	if config == nil {
+		return level >= slog.LevelInfo // Default to INFO level
+	}
+	return level >= config.LogLevel
 }
