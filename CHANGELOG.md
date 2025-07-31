@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2024-12-19
+
+### Added
+- **AWS CLI Compatible Token Caching**: Full compatibility with AWS CLI SSO token format and cache locations
+  - SHA1-based cache file naming matching AWS CLI behavior
+  - Compatible JSON token format for seamless interoperability
+  - Proper file permissions (0600 for tokens, 0700 for directories)
+- **Structured Logging Support**: Optional structured logging using Go's `log/slog`
+  - Configurable log levels and output formats
+  - Security-aware (no sensitive data logged)
+  - CLI `--verbose` flag for debug output
+- **Enhanced Input Validation**: Centralized validation for AWS resources
+  - Start URL, region, account ID, and role name validation
+- **Improved Timeout Handling**: Better context-based timeouts for operations
+
+### Fixed
+- Security improvements: removed debug output that could leak sensitive information
+- Improved error message sanitization
+- Better handling of authentication polling edge cases
+
+### Changed
+- **Breaking**: None - fully backward compatible
+- Added optional `Config` parameter to input structs for logging configuration
+- Enhanced authentication flow reliability
+
 ## [0.2.0] - 2024-07-30
 
 ### Fixed
@@ -64,6 +89,7 @@ This release fixes the main authentication issue where users would click "Allow"
 - Cobra CLI framework
 - Compatible with existing AWS SSO workflows
 
-[Unreleased]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adonmo/aws-sso-lib-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adonmo/aws-sso-lib-go/releases/tag/v0.1.0
