@@ -12,6 +12,7 @@ This project is inspired by the Python [aws-sso-util](https://github.com/benkeho
   - List available accounts and roles
   - Credential caching and management
   - Support for multiple SSO instances
+  - **🎉 NEW**: Comprehensive structured logging with `log/slog`
 
 - **CLI Tool (`aws-sso-util`)**: Command-line utilities for AWS SSO operations
   - Configure AWS profiles in `~/.aws/config`
@@ -20,6 +21,7 @@ This project is inspired by the Python [aws-sso-util](https://github.com/benkeho
   - Run commands with specific account/role credentials
   - Open AWS Console in browser
   - Admin utilities for SSO management
+  - **🎉 NEW**: `--verbose` flag for detailed debug logging
 
 ## Installation
 
@@ -80,6 +82,9 @@ import (
 func main() {
     ctx := context.Background()
     
+    // Optional: Configure structured logging
+    config := awsssolib.DefaultConfig() // INFO-level logging
+    
     // Get AWS SDK config for a specific account and role
     cfg, err := awsssolib.GetAWSConfig(ctx, awsssolib.GetAWSConfigInput{
         StartURL:   "https://my-sso.awsapps.com/start",
@@ -88,6 +93,7 @@ func main() {
         RoleName:   "MyRole",
         Region:     "us-west-2",
         Login:      true, // Interactively log in if needed
+        Config:     config, // Enable structured logging
     })
     if err != nil {
         log.Fatal(err)
@@ -103,6 +109,7 @@ func main() {
 ### Login to SSO
 
 ```go
+// Basic login
 token, err := awsssolib.Login(ctx, awsssolib.LoginInput{
     StartURL:  "https://my-sso.awsapps.com/start",
     SSORegion: "us-east-1",
@@ -111,6 +118,14 @@ if err != nil {
     log.Fatal(err)
 }
 fmt.Printf("Logged in successfully, token expires at: %s\n", token.ExpiresAt)
+
+// Login with structured logging
+config := awsssolib.DefaultConfig()
+token, err := awsssolib.Login(ctx, awsssolib.LoginInput{
+    StartURL:  "https://my-sso.awsapps.com/start",
+    SSORegion: "us-east-1",
+    Config:    config, // Enable logging
+})
 ```
 
 ### List available accounts and roles
@@ -146,6 +161,51 @@ for _, role := range roles {
 }
 ```
 
+### Structured Logging
+
+The library includes comprehensive structured logging support using Go's standard `log/slog` package:
+
+```go
+package main
+
+import (
+    "context"
+    "log/slog"
+    "os"
+    "github.com/adonmo/aws-sso-lib-go/awsssolib"
+)
+
+func main() {
+    // Create a JSON logger with DEBUG level
+    jsonLogger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+        Level: slog.LevelDebug,
+    }))
+    
+    // Create configuration with custom logger
+    config := awsssolib.NewConfig(jsonLogger, slog.LevelDebug)
+    
+    // All operations will now produce structured logs
+    accounts, err := awsssolib.ListAvailableAccounts(context.Background(), awsssolib.ListAccountsInput{
+        StartURL:  "https://my-sso.awsapps.com/start",
+        SSORegion: "us-east-1",
+        Config:    config, // Enable detailed logging
+    })
+    
+    // Logs will include structured data like:
+    // {"time":"2024-12-19T10:30:45Z","level":"INFO","msg":"Starting SSO login","start_url":"https://..."}
+    // {"time":"2024-12-19T10:30:46Z","level":"DEBUG","msg":"Checking for cached SSO token"}
+    // {"time":"2024-12-19T10:30:47Z","level":"INFO","msg":"Using cached SSO token","expires_at":"2024-12-19T18:30:45Z"}
+}
+```
+
+**Key Features:**
+- **Security-aware**: No sensitive data (tokens, credentials) ever logged
+- **Production-ready**: Configurable log levels and output formats
+- **Zero overhead**: No performance impact when logging is disabled
+- **Integration-friendly**: Works with any `slog.Handler` implementation
+
+For complete documentation, see [STRUCTURED_LOGGING.md](./STRUCTURED_LOGGING.md).
+
 ## CLI Usage
 
 ### Configure AWS profiles
@@ -167,6 +227,9 @@ aws-sso-util configure populate --regions us-east-1,us-west-2
 ```bash
 # Login to SSO (will open browser)
 aws-sso-util login
+
+# Login with verbose debug logging
+aws-sso-util login --verbose
 
 # Login with specific start URL
 aws-sso-util login --start-url https://my-sso.awsapps.com/start --sso-region us-east-1
